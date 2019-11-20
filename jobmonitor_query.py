@@ -1,14 +1,12 @@
 import concurrent.futures
 import requests
 import threading
-import time
 import configparser
 import os
 import logging
 import logging.config
 import sys
 import yaml
-import json
 import sqlite3
 
 thread_local = threading.local()
@@ -31,28 +29,35 @@ def setup_logging(default_path='loggingconfig.yaml', default_level=logging.INFO,
         logging.basicConfig(level=default_level, stream=sys.stdout)
         print('Failed to load configuration file. Using default configs')
 
-def create_db(db_file):
-    """Create database for the collection of metadata from the JobMonitor API"""
-    conn = None
-    try:
-        conn = sqlite3.connect(db_file)
-        logger.info("Connected to the database")
-        cursor = conn.cursor()
-        createTable = "CREATE TABLE "
-    except Error as e:
-        logger.error("Can't find the database")
-    finally:
-        if conn:
-            conn.close()
+def insert_to_db():
+    logger.info("Start writing to SQLite.")
+    conn = sqlite3.connect(config['default']['database'])
+    cursor = conn.cursor()
+    sql_create_table = ''' CREATE TABLE IF NOT EXISTS jobs (job_id text,id integer,app_name text,state text,date_created text); '''
+    sql_insert = ''' INSERT INTO jobs(job_id,id,app_name,state,date_created) VALUES(:job_id,:id,:app_name,:state,:date_created); '''
+    cursor.execute(sql_create_table)
+    cursor.executemany(sql_insert, jobs)
+    conn.commit()
+    conn.close()
+    logger.info("End writing to SQLite.")
 
 def get_session():
     if not hasattr(thread_local, "session"):
         thread_local.session = requests.Session()
     return thread_local.session
 
-def request_get(url):
+def get_job(job_id):
     session = get_session()
-    result = session.get(url).json()
+    logger.info(f"Getting job {job_id}.")
+    with session.get(f"{config['default']['url']}{job_id}/") as response:
+        global jobs
+        jobs += response.json()
+
+def request_all_jobs(job_ids, threads):
+    logger.info("Start collecting jobs.")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=int(threads)) as executor:
+        executor.map(get_job, job_ids)
+    logger.info("End collecting jobs.")
 
 def read_file():
     config = configparser.ConfigParser()
@@ -65,18 +70,16 @@ def read_file():
             request_get_all(final_url)
     return site
 
-def request_get_all(site)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        executor.map(request_get,site)
 
 def main():
     """
     Main function of the program
-    :return:
     """
-    start_time = time.time()
-    duration = time.time() - start_time
-    logger.info(f"Collected {len(read_file())} in {duration} seconds")
+    with open(config['default']['file']) as file:
+        logger.info("Reading text file.")
+        job_ids = file.read().splitlines()
+    request_all_jobs(job_ids, config['default']['threads'])
+    insert_to_db()
 
 if __name__ == "__main__":
     config = configparser.ConfigParser()
@@ -86,6 +89,6 @@ if __name__ == "__main__":
     logger = logging.getLogger(__name__)
     logger.info("Creating new log file")
     logger.info("Logging setup completed")
-    create_db(config['default']['database'])
+    jobs = []
     main()
 
